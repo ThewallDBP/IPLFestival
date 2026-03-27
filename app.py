@@ -1,29 +1,61 @@
 import streamlit as st
 import pandas as pd
+import sqlite3
 from datetime import datetime
-from streamlit_gsheets import GSheetsConnection
+import os
 
 # --- Configuration ---
+DB_FILE = "ipl_data.db"
 ADMIN_PASSWORD = "admin_ipl_2026"
 
 st.set_page_config(page_title="IPL Match Selector", page_icon="🏏")
 
-# --- Connection ---
-conn = st.connection("gsheets", type=GSheetsConnection)
+# --- Database Setup ---
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS matches 
+                 (date TEXT, user TEXT, password TEXT, match_name TEXT, team TEXT)''')
+    conn.commit()
+    conn.close()
 
+def get_data():
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query("SELECT * FROM matches", conn)
+    conn.close()
+    return df
+
+def save_data(date, user, password, match, team):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    # Check if user already exists for today's match
+    c.execute("SELECT * FROM matches WHERE date=? AND user=? AND match_name=?", (date, user, match))
+    row = c.fetchone()
+    
+    if row:
+        if str(row[2]) == str(password):
+            c.execute("UPDATE matches SET team=? WHERE date=? AND user=? AND match_name=?", (team, date, user, match))
+            msg = "Updated!"
+            status = "success"
+        else:
+            msg = "Wrong Password!"
+            status = "error"
+    else:
+        c.execute("INSERT INTO matches VALUES (?,?,?,?,?)", (date, user, password, match, team))
+        msg = "Registered!"
+        status = "success"
+    
+    conn.commit()
+    conn.close()
+    return msg, status
+
+init_db()
 today_date = datetime.now().strftime("%d-%m-%Y")
 
-# Data Read karne ka asaan tareeka
-try:
-    df = conn.read(ttl=0)
-    if df is None or len(df) == 0:
-        df = pd.DataFrame(columns=["Date", "User", "Password", "Match", "Team"])
-except Exception:
-    df = pd.DataFrame(columns=["Date", "User", "Password", "Match", "Team"])
+st.title(f"🏏 IPL Selector - {today_date}")
 
-st.title(f"🏏 IPL Match Selector - {today_date}")
-
-# --- Input Section ---
+# --- Step 1: User Input ---
+st.header("Login & Selection")
 match_choice = st.selectbox("Select Match:", ["Match 1 (3 PM)", "Match 2 (7 PM)"])
 lock_time = 15 if "Match 1" in match_choice else 19
 
@@ -31,44 +63,42 @@ user_name = st.text_input("Username:", key="u_name").strip()
 user_pass = st.text_input("Password:", type="password", key="u_pass").strip()
 selected_team = st.radio("Choose Side:", ["Team A", "Team B"], key="u_team")
 
-if st.button("Submit / Update Selection"):
+if st.button("Submit Selection"):
     if user_name and user_pass:
-        # Check if user exists today for this match
-        mask = (df['Date'] == today_date) & (df['User'] == user_name) & (df['Match'] == match_choice)
-        
-        if mask.any():
-            idx = df[mask].index[0]
-            if str(df.at[idx, 'Password']) == str(user_pass):
-                df.at[idx, 'Team'] = selected_team
-                # Yahan error aa raha tha, isliye hum clear_cache karke update karenge
-                conn.update(data=df)
-                st.success("Updated!")
-            else:
-                st.error("Wrong Password!")
-        else:
-            new_row = pd.DataFrame({
-                "Date": [today_date], "User": [user_name], 
-                "Password": [user_pass], "Match": [match_choice], "Team": [selected_team]
-            })
-            df = pd.concat([df, new_row], ignore_index=True)
-            conn.update(data=df)
-            st.success("Registered!")
+        msg, status = save_data(today_date, user_name, user_pass, match_choice, selected_team)
+        if status == "success": st.success(msg)
+        else: st.error(msg)
     else:
-        st.warning("Fill all details.")
+        st.warning("Please fill all details.")
 
-# --- Display Section ---
-# (Wahi purana logic display ke liye...)
 st.divider()
+
+# --- Step 2: Display Results ---
+st.header(f"📊 Results for {match_choice}")
 current_hour = datetime.now().hour
-today_data = df[(df['Date'] == today_date) & (df['Match'] == match_choice)]
+df = get_data()
+today_data = df[(df['date'] == today_date) & (df['match_name'] == match_choice)]
 
 if current_hour >= lock_time:
     c1, c2 = st.columns(2)
     with c1:
-        st.info("Team A")
-        st.write(today_data[today_data['Team'] == "Team A"]['User'].tolist())
+        st.info("### Team A")
+        for u in today_data[today_data['team'] == "Team A"]['user'].tolist():
+            st.write(f"👤 {u}")
     with c2:
-        st.success("Team B")
-        st.write(today_data[today_data['Team'] == "Team B"]['User'].tolist())
+        st.success("### Team B")
+        for u in today_data[today_data['team'] == "Team B"]['user'].tolist():
+            st.write(f"👤 {u}")
 else:
-    st.info(f"Locked until {lock_time}:00. Current: {len(today_data)} users.")
+    st.info(f"🔒 {match_choice} ki teams {lock_time}:00 baje khulengi.")
+    st.metric("Users Registered", len(today_data))
+
+# --- Admin Section ---
+st.sidebar.title("Admin")
+if st.sidebar.text_input("Admin Key", type="password") == ADMIN_PASSWORD:
+    if st.sidebar.button("Clear Database"):
+        if os.path.exists(DB_FILE):
+            os.remove(DB_FILE)
+            init_db()
+            st.sidebar.success("Database Cleared!")
+            st.rerun()
