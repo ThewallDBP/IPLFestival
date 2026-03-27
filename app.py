@@ -1,86 +1,74 @@
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
+from streamlit_gsheets import GSheetsConnection
 
 # --- Configuration ---
-LOCK_TIME = 19 
-ADMIN_PASSWORD = "admin_ipl_2026" # Only for you to clear data
+ADMIN_PASSWORD = "admin_ipl_2026"
 
-st.set_page_config(page_title="IPL Private Login", page_icon="🔐")
+st.set_page_config(page_title="IPL Match Selector", page_icon="🏏")
 
-# --- Connect to Google Sheets ---
+# --- Connection ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Read data (ttl=0 to get real-time updates)
+today_date = datetime.now().strftime("%d-%m-%Y")
+
+# Data Read karne ka asaan tareeka
 try:
     df = conn.read(ttl=0)
-    # Ensure columns exist
-    if df.empty:
-        df = pd.DataFrame(columns=["User", "Password", "Team"])
-except:
-    df = pd.DataFrame(columns=["User", "Password", "Team"])
+    if df is None or len(df) == 0:
+        df = pd.DataFrame(columns=["Date", "User", "Password", "Match", "Team"])
+except Exception:
+    df = pd.DataFrame(columns=["Date", "User", "Password", "Match", "Team"])
 
-st.title("🏏 IPL Match: Private Selection")
+st.title(f"🏏 IPL Match Selector - {today_date}")
 
-# --- Step 1: Secure Login/Registration ---
-st.header("Login & Select Team")
+# --- Input Section ---
+match_choice = st.selectbox("Select Match:", ["Match 1 (3 PM)", "Match 2 (7 PM)"])
+lock_time = 15 if "Match 1" in match_choice else 19
 
-user_name = st.text_input("Username (Apna Naam Likhein):", key="u_name").strip()
-user_pass = st.text_input("Password (Secret Code):", type="password", key="u_pass").strip()
+user_name = st.text_input("Username:", key="u_name").strip()
+user_pass = st.text_input("Password:", type="password", key="u_pass").strip()
 selected_team = st.radio("Choose Side:", ["Team A", "Team B"], key="u_team")
 
-if st.button("Submit / Update"):
+if st.button("Submit / Update Selection"):
     if user_name and user_pass:
-        # Check if user already exists in the sheet
-        user_exists = user_name in df['User'].values
+        # Check if user exists today for this match
+        mask = (df['Date'] == today_date) & (df['User'] == user_name) & (df['Match'] == match_choice)
         
-        if user_exists:
-            # Check if password matches
-            correct_pass = str(df.loc[df['User'] == user_name, 'Password'].values[0])
-            if str(user_pass) == correct_pass:
-                df.loc[df['User'] == user_name, 'Team'] = selected_team
+        if mask.any():
+            idx = df[mask].index[0]
+            if str(df.at[idx, 'Password']) == str(user_pass):
+                df.at[idx, 'Team'] = selected_team
+                # Yahan error aa raha tha, isliye hum clear_cache karke update karenge
                 conn.update(data=df)
-                st.success(f"Updated! {user_name}, aapka team change ho gaya hai.")
+                st.success("Updated!")
             else:
-                st.error("❌ Galat Password! Aap is user ki team nahi badal sakte.")
+                st.error("Wrong Password!")
         else:
-            # New User Registration
-            new_user = pd.DataFrame({"User": [user_name], "Password": [user_pass], "Team": [selected_team]})
-            df = pd.concat([df, new_user], ignore_index=True)
+            new_row = pd.DataFrame({
+                "Date": [today_date], "User": [user_name], 
+                "Password": [user_pass], "Match": [match_choice], "Team": [selected_team]
+            })
+            df = pd.concat([df, new_row], ignore_index=True)
             conn.update(data=df)
-            st.success(f"✅ Registered! {user_name}, aapka selection save ho gaya.")
+            st.success("Registered!")
     else:
-        st.warning("Naam aur Password dono zaruri hain!")
+        st.warning("Fill all details.")
 
+# --- Display Section ---
+# (Wahi purana logic display ke liye...)
 st.divider()
-
-# --- Step 2: The Reveal Logic ---
 current_hour = datetime.now().hour
+today_data = df[(df['Date'] == today_date) & (df['Match'] == match_choice)]
 
-if current_hour >= LOCK_TIME:
-    st.subheader("📢 Final Teams (7 PM Reveal)")
-    col1, col2 = st.columns(2)
-    
-    # Show only User and Team (Hide Passwords from everyone!)
-    with col1:
-        st.info("### Team A")
-        team_a = df[df['Team'] == "Team A"]['User'].tolist()
-        for u in team_a: st.write(f"👤 {u}")
-            
-    with col2:
-        st.success("### Team B")
-        team_b = df[df['Team'] == "Team B"]['User'].tolist()
-        for u in team_b: st.write(f"👤 {u}")
+if current_hour >= lock_time:
+    c1, c2 = st.columns(2)
+    with c1:
+        st.info("Team A")
+        st.write(today_data[today_data['Team'] == "Team A"]['User'].tolist())
+    with c2:
+        st.success("Team B")
+        st.write(today_data[today_data['Team'] == "Team B"]['User'].tolist())
 else:
-    st.info(f"🔒 Sabki choices 7:00 PM ko dikhengi. Abhi tak {len(df)} users ne join kiya hai.")
-
-# --- Step 3: Admin Section ---
-st.sidebar.title("Admin Only")
-admin_in = st.sidebar.text_input("Admin Key", type="password")
-if admin_in == ADMIN_PASSWORD:
-    if st.sidebar.button("Reset Everything"):
-        empty_df = pd.DataFrame(columns=["User", "Password", "Team"])
-        conn.update(data=empty_df)
-        st.sidebar.success("Sheet empty ho gayi!")
-        st.rerun()
+    st.info(f"Locked until {lock_time}:00. Current: {len(today_data)} users.")
