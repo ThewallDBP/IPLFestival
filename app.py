@@ -1,95 +1,86 @@
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 from datetime import datetime
-import os
 
 # --- Configuration ---
-DATA_FILE = "predictions.csv"
-LOCK_TIME = 19  # 7:00 PM (24-hour format)
-ADMIN_PASSWORD = "ipl2026"  # Change this to your preferred password
+LOCK_TIME = 19 
+ADMIN_PASSWORD = "admin_ipl_2026" # Only for you to clear data
 
-st.set_page_config(page_title="IPL Team Selector", page_icon="🏏")
+st.set_page_config(page_title="IPL Private Login", page_icon="🔐")
 
-# --- Initialize Data File ---
-if not os.path.exists(DATA_FILE):
-    df = pd.DataFrame(columns=["User", "Team"])
-    df.to_csv(DATA_FILE, index=False)
+# --- Connect to Google Sheets ---
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-st.title("🏏 IPL Match: Team Selection")
-st.write("Pick your side before 7:00 PM!")
+# Read data (ttl=0 to get real-time updates)
+try:
+    df = conn.read(ttl=0)
+    # Ensure columns exist
+    if df.empty:
+        df = pd.DataFrame(columns=["User", "Password", "Team"])
+except:
+    df = pd.DataFrame(columns=["User", "Password", "Team"])
 
-# --- Step 1: User Login & Selection ---
-st.header("Make Your Choice")
+st.title("🏏 IPL Match: Private Selection")
 
-# Added a unique 'key' to prevent DuplicateElementId error
-user_name = st.text_input("Enter your name:", key="main_user_input").strip()
+# --- Step 1: Secure Login/Registration ---
+st.header("Login & Select Team")
 
-selected_team = st.radio(
-    "Which side are you on?", 
-    ["Team A", "Team B"], 
-    key="team_radio"
-)
+user_name = st.text_input("Username (Apna Naam Likhein):", key="u_name").strip()
+user_pass = st.text_input("Password (Secret Code):", type="password", key="u_pass").strip()
+selected_team = st.radio("Choose Side:", ["Team A", "Team B"], key="u_team")
 
-if st.button("Submit Selection", key="submit_btn"):
-    if user_name:
-        df = pd.read_csv(DATA_FILE)
-        # If user exists, update their choice; otherwise, add them
-        if user_name in df['User'].values:
-            df.loc[df['User'] == user_name, 'Team'] = selected_team
-            st.info(f"Updated: {user_name} is now on {selected_team}")
-        else:
-            new_row = pd.DataFrame({"User": [user_name], "Team": [selected_team]})
-            df = pd.concat([df, new_row], ignore_index=True)
-            st.success(f"Welcome to the game, {user_name}!")
+if st.button("Submit / Update"):
+    if user_name and user_pass:
+        # Check if user already exists in the sheet
+        user_exists = user_name in df['User'].values
         
-        df.to_csv(DATA_FILE, index=False)
+        if user_exists:
+            # Check if password matches
+            correct_pass = str(df.loc[df['User'] == user_name, 'Password'].values[0])
+            if str(user_pass) == correct_pass:
+                df.loc[df['User'] == user_name, 'Team'] = selected_team
+                conn.update(data=df)
+                st.success(f"Updated! {user_name}, aapka team change ho gaya hai.")
+            else:
+                st.error("❌ Galat Password! Aap is user ki team nahi badal sakte.")
+        else:
+            # New User Registration
+            new_user = pd.DataFrame({"User": [user_name], "Password": [user_pass], "Team": [selected_team]})
+            df = pd.concat([df, new_user], ignore_index=True)
+            conn.update(data=df)
+            st.success(f"✅ Registered! {user_name}, aapka selection save ho gaya.")
     else:
-        st.error("Please enter your name before submitting.")
+        st.warning("Naam aur Password dono zaruri hain!")
 
 st.divider()
 
 # --- Step 2: The Reveal Logic ---
-st.header("Match Lineups")
-
 current_hour = datetime.now().hour
-df_results = pd.read_csv(DATA_FILE)
 
 if current_hour >= LOCK_TIME:
-    st.subheader("📢 The Reveal is LIVE!")
-    
+    st.subheader("📢 Final Teams (7 PM Reveal)")
     col1, col2 = st.columns(2)
     
+    # Show only User and Team (Hide Passwords from everyone!)
     with col1:
-        st.markdown("### 🚩 Team A")
-        team_a_list = df_results[df_results['Team'] == "Team A"]['User'].tolist()
-        if team_a_list:
-            for user in team_a_list:
-                st.write(f"• {user}")
-        else:
-            st.write("_No players yet_")
+        st.info("### Team A")
+        team_a = df[df['Team'] == "Team A"]['User'].tolist()
+        for u in team_a: st.write(f"👤 {u}")
             
     with col2:
-        st.markdown("### 🚩 Team B")
-        team_b_list = df_results[df_results['Team'] == "Team B"]['User'].tolist()
-        if team_b_list:
-            for user in team_b_list:
-                st.write(f"• {user}")
-        else:
-            st.write("_No players yet_")
+        st.success("### Team B")
+        team_b = df[df['Team'] == "Team B"]['User'].tolist()
+        for u in team_b: st.write(f"👤 {u}")
 else:
-    time_left = LOCK_TIME - current_hour
-    st.info(f"🔒 Selections are hidden until 7:00 PM. Check back in about {time_left} hour(s)!")
-    st.metric("Total Participants", len(df_results))
+    st.info(f"🔒 Sabki choices 7:00 PM ko dikhengi. Abhi tak {len(df)} users ne join kiya hai.")
 
-# --- Step 3: Admin Section (Sidebar) ---
-st.sidebar.title("Admin Panel")
-# Added unique 'key' and 'type=password' for security
-admin_input = st.sidebar.text_input("Enter Admin Password", type="password", key="admin_pass_input")
-
-if admin_input == ADMIN_PASSWORD:
-    st.sidebar.warning("Authenticated")
-    if st.sidebar.button("Clear All Data for New Match", key="clear_data_btn"):
-        df_empty = pd.DataFrame(columns=["User", "Team"])
-        df_empty.to_csv(DATA_FILE, index=False)
-        st.sidebar.success("All selections have been cleared!")
+# --- Step 3: Admin Section ---
+st.sidebar.title("Admin Only")
+admin_in = st.sidebar.text_input("Admin Key", type="password")
+if admin_in == ADMIN_PASSWORD:
+    if st.sidebar.button("Reset Everything"):
+        empty_df = pd.DataFrame(columns=["User", "Password", "Team"])
+        conn.update(data=empty_df)
+        st.sidebar.success("Sheet empty ho gayi!")
         st.rerun()
